@@ -1,0 +1,11 @@
+import ollama 
+#Call's Ollama's embeddings() function and passes 2 arguements
+#the model 
+#The input text to generate the embedding for
+response = ollama.embeddings(
+    model='llama3',  # or any model that supports embeddings
+    prompt='Oceans are vast bodies of salt water'
+)
+#Prints the embedding vector (list of numbers) to screen
+#I'm accessing the "embedding" vector from tehe dictionary named 'response'
+print(response['embedding'])
