@@ -1,0 +1,219 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(DBI)
+library(RSQLite)
+library(dplyr)
+library(dbplyr)
+library(tibble)
+library(lubridate)
+
+PSTAT132db <- dbConnect(RSQLite::SQLite(), "PSTAT132-db.sqlite")
+dbRemoveTable(PSTAT132db, 'orders')
+dbRemoveTable(PSTAT132db, 'customers')
+dbListTables(PSTAT132db)
+
+#Create Schema
+dbExecute(PSTAT132db, "
+          CREATE TABLE customers (
+          customer_id INTEGER PRIMARY KEY, 
+          name TEXT, 
+          state TEXT
+          );
+          ")
+
+dbExecute(PSTAT132db, "
+          CREATE TABLE orders (
+          order_id INTEGER PRIMARY KEY,
+          customer_id INTEGER,
+          order_date TEXT, 
+          status TEXT, 
+          amount NUMERIC
+          );
+          ")
+
+#Populating tables with synthetic but repeatable data
+set.seed(42)
+n_customers <- 5000
+n_orders <- 80000
+
+# customers
+customers <- data.frame(
+customer_id = seq_len(n_customers),
+name = paste0('C', sprintf('%05d', seq_len(n_customers))),
+state = sample(c('CA','NY','TX','WA','FL','MA'), n_customers, replace =
+TRUE),
+stringsAsFactors = FALSE
+)
+dbWriteTable(PSTAT132db, "customer", customers, append = TRUE, row.names
+= FALSE)
+
+# orders: skewed customer distribution, dates in 2020, mixed statuses,
+random amounts
+cust_ids <- sample.int(n_customers, n_orders, replace = TRUE,
+prob = rexp(n_customers, rate = 1 / n_customers))
+order_dates <- as.Date("2020-01-01") + sample(0:365, n_orders, replace =
+TRUE)
+statuses <- sample(c("PENDING","SHIPPED","CANCELLED","RETURNED"),
+n_orders, replace = TRUE,
+prob = c(0.2,0.6,0.1,0.1))
+amounts <- round(runif(n_orders, 5, 500), 2)
+orders <- data.frame(
+order_id = seq_len(n_orders),
+customer_id = cust_ids,
+order_date = format(order_dates, "%Y-%m-%d"),
+status = statuses,
+amount = amounts,
+stringsAsFactors = FALSE
+)
+
+# Write orders
+dbWriteTable(PSTAT132db, "orders", orders, append = TRUE, row.names =
+FALSE)
+
+#Helper: explain plan + timed execution
+explain_plan <- function(sql) {
+dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN ", sql))
+}
+time_query <- function(sql) {
+t <- system.time(res <- dbGetQuery(PSTAT132db, sql))
+list(time = t, nrows = if (is.data.frame(res)) nrow(res) else NA,
+result = res)
+}
+```
+
+Demo 2: Baseline (query for a specific customer)
+```{r}
+sql_base <- "SELECT * FROM orders WHERE customer_id = 1234; "
+
+#explain plan 
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN", sql_base)))
+
+#time query
+system.time(res <- dbGetQuery(PSTAT132db, sql_base))
+nrow(res)
+```
+
+Demo 3: Create a single-column index on customer_id and measure 
+Create an index on orders.customer_id
+```{r}
+dbExecute(PSTAT132db, "CREATE INDEX idx_orders_customer ON orders(customer_id);")
+
+#Explain plan for the same query now 
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN ", sql_base)))
+
+#Time Query again
+system.time(res2 <- dbGetQuery(PSTAT132db, sql_base))
+nrow(res2)
+```
+
+Demo 4: Composite index (customer_id, order_date)
+-First, sort by customer id, then sort by order date 
+```{r}
+dbExecute(PSTAT132db, "CREATE INDEX idx_orders_cust_date ON 
+          orders(customer_id, order_date);")
+dbExecute(PSTAT132db, "ANALYZE;") #analyze collects statistics about database tables and indexes so SQLite can make better decisions about how to execute queries
+#it collects info about the data and indexes, and then SQLite uses those stats to help decide whether using an index will be faster than scanning the table 
+
+
+#Query that can use left-most prefix 
+sql_cust_date <- "
+SELECT * FROM orders
+WHERE customer_id = 1234 AND order_date BETWEEN '2020-0601' AND '2020-06-30';
+"
+
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN ", 
+                                    sql_cust_date)))
+system.time(dbGetQuery(PSTAT132db, sql_cust_date))
+
+#Query that does NOT match left-most prefix 
+sql_date_only <- "
+SELECT * FROM orers
+WHERE order_date BETWEEN '202-06-01' AND '2020-06-30';
+"
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN", 
+                                    sql_date_only)))
+system.time(dbGetQuery(PSTAT132db, sql_date_only))
+
+```
+
+
+Demo 5: Covering index (customer_id, order_date, amount)
+A covering index is an index that contains all the columns a query needs, so the database can answer the query using the index without looking up the original table rows
+```{r}
+dbExecute(PSTAT132db, "CREATE INDEX idx_orders_cover ON
+orders(customer_id, order_date, amount);
+")
+#update database statistics 
+dbExecute(PSTAT132db, "ANALYZE;")
+
+#everything required in the query is covered in the index 
+sql_cover <- "
+SELECT order_date, amount
+FROM orders
+WHERE customer_id = 1234
+AND order_date >= '2023-01-01'
+AND order_date < '2023-02-01'
+ORDER BY order_date;
+"
+
+#calls previously defined explain_plan() helper function to show SQLite's execution plan
+print(explain_plan(sql_cover))
+#calls previously defined 'time_query()' helper function and prints its 'time' results
+print(time_query(sql_cover)$time)
+
+system.time(dbGetQuery(PSTAT132db, sql_cover))
+
+#Example- measurable duration (timing out 1000 repetitions)
+timing <- system.time({
+  for(i in seq_len(1000)) {
+    res_cover <- dbGetQuery(PSTAT132db, sql_cover)
+  }
+})
+print(timing)
+print(timing[["elapsed"]]/1000)
+```
+
+Demo 6: ORDER BY without useful index
+```{r}
+sql_order_no_idx <- "SELECT * 
+FROM orders 
+WHERE customer_id = 1234 
+ORDER BY amount
+DESC LIMIT 10;"
+
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN ", sql_order_no_idx)))
+system.time(dbGetQuery(PSTAT132db, sql_order_no_idx))
+
+#ORDER BY with index that helps (customer_id, amount) not yet created
+#creating index that helps the query
+dbExecute(PSTAT132db, "CREATE INDEX idx_orders_cust_amount ON
+          orders(customer_id, amount);
+          ")
+dbExecute(PSTAT132db, "ANALYZE;")
+#re examining query plan
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN ",
+                                    sql_order_no_idx)))
+#measuring time again
+system.time(dbGetQuery(PSTAT132db, sql_order_no_idx))
+
+```
+
+Demo 7: Create partial index on only pending order
+```{r}
+#A partial index indexes only the rows that satisfy a specified condition
+#Here, the index orders by customer id whose status is 'PENDING'
+dbExecute(PSTAT132db, "CREATE INDEX idc_orders_pending ON 
+          orders(customer_id) WHERE status = 'PENDING';
+          ")
+dbExecute(PSTAT132db, "ANALYZE;")
+
+#Query that benefits
+sql_pending <- "SELECT * 
+FROM orders 
+WHERE customer_id = 1234 AND status = 'PENDING';"
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN ", sql_pending))) #paste0() is an R function that joins pieces of text together without adding spaces between them
+system.time(dbGetQuery(PSTAT132db, sql_pending))
+
+dbDisconnect(PSTAT132db)
+```
