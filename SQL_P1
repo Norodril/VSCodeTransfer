@@ -1,0 +1,303 @@
+---
+title: "SQLPractice1"
+author: "Lir Doron"
+date: "2026-10-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#importing packages
+library(DBI) #connects R to databases using a standard interface
+library(RSQLite) #lets R work with SQLite databases
+library(dplyr) #helps to manipulate and analyze data- can work with data already loaded into R 
+library(dbplyr) #lets you use dplyr commands on database tables/ transland R commands into SQL 
+library(tibble) #provides a modern version of a data frame
+library(ggplot2) #to create graphs and visualizations
+```
+
+Demo 1- Creating a new database called 'PSTAT132' 
+A database is a collection of stored information
+```{r}
+PSTAT132db <- dbConnect(RSQLite::SQLite(), "PSTAT132-db.sqlite")
+#dbConnect opens a connection to a database- If PSTAT132-db.sqlite already exists, R connects to that database so you can access its existing tables and data. If the database doesn't exist yet, SQLite will generally create a new, empty database file with that name 
+#If it doesn't exist and SQLite created a new empty database, it doesn'y automatically create the tables, you would need to create those separately
+
+#dbExecute sends a SQL command to the database 
+#PSTAT132db is the connection to the database, and the text inside the quotation marks is the SQL command the database should execute 
+
+#dbExecute syntax is dbExecute(connection (which database to use), statement (the SQL command you want the database to execute))
+dbExecute(PSTAT132db, " 
+          CREATE TABLE products(
+          product_id INTEGER PRIMARY KEY,
+          product_name TEXT,
+          category TEXT,
+          price REAL
+          );
+          ")
+message("Table 'products' created.")
+```
+
+Inserting data into the products table
+```{r}
+#INSERT INTO means add new data to a table
+#INSERT INTO table_name (column1, column 2, column3) 
+#VALUES 
+#(value1, value2, value3),
+#(value1, value2, value3);
+dbExecute(PSTAT132db, "
+          INSERT INTO products(product_id, product_name, category, price)
+          VALUES 
+          (1, 'Laptop', 'Electronics', 1200.00),
+          (2, 'Desk Chair', 'Furniture', 150.50),
+          (3, 'Wireless Mouse', 'Electronics', 25.99),
+          (4, 'Notebook', 'Stationery', 5.00),
+          (5, 'Monitor', 'Electronics', 300.00);
+          ")
+
+message("Five rows inserted into 'products'.")
+```
+
+Creating 2 tibbles and adding to the database  (just an alternative)
+This code creates 2 tables of data in R first, and does not add them to the SQLite database yet. 
+A tible is basically a table in R, similar to a spreadsheet 
+```{r}
+#Creating 3 two tables (customers and orders)
+#Tibble syntax: table_name <- tibble(
+#column1 = values,
+#column2 = values, 
+#column3 = values
+#)
+)
+customers <- tibble(
+  customer_id = 1:6, #each line separated by a comma represents a column in the table 
+  name = c("Ava", "Ben", "Chi", "Dee", "Eli", "Faye"),
+  region = c("North", "South", "North", "West", "South", "East")
+)
+
+orders <- tibble(
+  order_id = 1:12,
+  customer_id = c(1, 2, 1, 3, 4, 2, 5, 6, 1, 3, 5, 2),
+  product_id = c(1, 2, 1, 3, 4, 2, 1, 4, 3, 2, 1, 1),
+  order_data = as.Date("2023-01-01") + c(0, 2, 5, 7, 10, 11, 12, 14, 15, 18, 20, 22),
+  amount = c(120, 55, 80, 40, 200, 30, 90, 160, 35, 75, 60, 95),
+  notes = c(NA, "gift", "promo", NA, "RETURNED", NA, "gift", "buil", NA, NA, "promo", "gift"))
+)
+```
+
+Writting the tibles to the database (overwrite if already present)
+This code takes the 2 tibbles we created in R, and saves them as tables inside the SQLite database
+```{r}
+#dbWriteTable() writes data from R into a database table 
+dbWriteTable(PSTAT132db, "customers", customers, overwrite = TRUE) #"customers" is the name of the table inside the database, customers is the tibble in R containing the data to write, overwrite = TRUE means if a table named 'customers' already exists, replace it 
+dbWriteTable(PSTAT132db, "orders", orders, overwrite = TRUE )
+```
+
+General syntax of dbWriteTable():
+dbWriteTable(
+conn, - connection name 
+name, - name of the table in the database, usually written as text in quotes
+value, - R object containing the data to write, such as a tibble or data frame
+overwrite = FALSE, - Whether to replace the table if it already exists
+append = FALSE - Whther to add the new rows to an existing table instead of replacing it 
+)
+
+- Default for both 'overwrite' and 'append' is FALSE
+
+Inspecting the database. Use single or double quotes. Be consistent. 
+
+```{r}
+dbListTables(PSTAT132db) #lists table names
+dbListFields(PSTAT132db, "products") #lists columns from "products" in order
+dbGetQuery(PSTAT132db, 'SELECT * FROM products')
+dbGetQuery(PSTAT132db, "PRAGMA table_info('products')") #schema and types for orders
+is.data.frame(products) #boolean- checks whether the R object named 'products' is a data frame/ tibble
+```
+
+Demo 2: 
+Basic SQL queries via DBI 
+```{r}
+#Retrieves all columns and all rows
+all_products <- dbGetQuery(PSTAT132db, "SELECT * FROM products;")
+print(all_products)
+
+#Retrieve just the names and category
+names_and_categories <- dbGetQuery(PSTAT132db, "SELECT product_name, category FROM products;")
+print(names_and_categories)
+
+#Filter using WHERE
+expensive_items <- dbGetQuery(PSTAT132db, "
+                              SELECT product_name, price
+                              FROM products
+                              WHERE price > 100.000;
+                              ")
+print(expensive_items)
+
+#Sort using ORDER BY
+sorted_products <- dbGetQuery(PSTAT132db, "
+                              SELECT * 
+                              FROM products
+                              ORDER BY price DESC;
+                              ")
+print(sorted_products)
+
+#finding the top 1 most expensive item using ORDER BY and LIMIT
+top_item <- dbGetQuery(PSTAT132db, "
+                       SELECT product_name, price
+                       FROM products
+                       ORDER BY price DESC
+                       LIMIT 1;
+                       ")
+print(top_item)
+```
+
+Complex Filtering
+```{r}
+#returns a product if either it is in the Electronics category AND its price is Less than 500$, or its product name contains 'Note' somewhere in it 
+#the parenthesis group the first 2 conditions together 
+#SQL naturally evaluates AND before OR 
+complex_query <- dbGetQuery(PSTAT132db, "
+                            SELECT product_name, category, price
+                            FROM products
+                            WHERE (category = 'Electronics' AND price < 500.00)
+                            OR product_name LIKE '%Note%';
+                            ")
+print(complex_query)
+```
+
+Demo 3: Filtered Query (WHERE) and sorting (ORDER BY)
+```{r}
+#JOIN and INNER JOIN mean the exact same thing in SQL 
+q2 <- dbGetQuery(PSTAT132db, "
+                 SELECT o.order_id, o.order_date, o.amount, c.name AS customer
+                 FROM orders o
+                 JOIN customers c ON o.customer_id = c.customer_id
+                 WHERE amount > 80
+                 ORDER BY amount DESC;
+                 ")
+print(q2)
+
+#Aggregation: total sales by region (GROUP BY + HAVING)
+#COUNT(*)- the 'orders' table has one row for each order. 
+q3 <- dbGetQuery(PSTAT132db, "
+                 SELECT c.region, SUM(o.amount) AS total_sales, COUNT(*) AS n_orders
+                 FROM orders o
+                 JOIN customers c ON o.customer_id = c.customer_id
+                 GROUP BY c.region
+                 HAVING SUM(o.amount) > 150
+                 ORDER BY total_sales DESC;
+                 ")
+print(q3)
+```
+
+
+Here, COUNT(*) counts all rows in the group, meaning it counts the number of orders per region, since we grouped by c.region
+
+Demo 4
+Recall dplyr for manipulating in-memory data frames
+This is an example using the 'mtcars' dataset
+```{r}
+#1. Filter rows, select columns, create new vaiables, and sort
+EXAMPLE_df <- mtcars %>%
+  filter(mpg > 20) %>% #keeps cars with > 20MPG
+  select(mpg, cyl, hp) %>% #keeps only these columns
+  mutate(hp_per_cyl = hp/ cyl) %>% #creates a new calculated column
+  arrange(desc(hp_per_cyl)) #sorts the new column in descending order
+print(EXAMPLE_df)
+
+#Demo 5- use dbplyr: create remote table references and compose a query
+#tbl() creates a reference to a database table 
+orders_tbl <- tbl(PSTAT132db, "orders")
+customers_tbl <- tbl(PSTAT132db, "customers")
+products_tbl <- tbl(PSTAT132db, "products")
+
+#Compose a query in dplyr and show the SQL that will be executed 
+q_dplyr <- orders_tbl %>%
+  inner_join(customers_tbl, by = "customer_id") %>%  #both will be joined based on customer_id column
+  inner_join(products_tbl, by = "product_id") %>% #both will be joined based on product_id column
+  filter(amount > 50, category = "Electronics") %>%  #order amount must be > 50
+  select(order_id, order_date, name, product_name, amount) %>% 
+  arrange(desc(amount)) %>%  #amount from largest to smallest
+  head(10) #gives the 10 highest amount orders that satisfy filters
+
+show_query(q_dplyr) #display the SQL that dbplyr generates from the R code 
+#show_query() displays the SQL, but does not fetch the resulting rows into R 
+
+df_dplyr <- q_dplyr %>% collect() #execute on DB and pull into R 
+#collect() tells dbplyr to execute the query against SQLite and retrieve the resulting rows into R 
+print(df_dplyr)
+
+
+#uses ggplot2 to create a line graph showing how total sales change from month to month
+#x = ym means put the year and month on the horizontal axis, y = total sales means put the total_sales column on the vertical axis 
+#group = 1 means treat all observations as one group, so R connects them with one conitnuous line 
+#group = region would mean observations are put into groups based on their 'region' values, so R can draw a separate line for each region 
+ggplot(monthly_sales, aes(x = ym, y = total_sales, group = 1)) + 
+  geom_line() + geom_point() +
+  labs(x = "Year-Month", y = "Total sales", title = "Monthly sales (Sample DB)") + 
+  theme_minimal()
+```
+
+Demo 6
+Writting a new R data frame to DB
+```{r}
+#Example- customer_totals
+#connecting the customers table to the 'orders' table using matching customer IDs 
+#Left join keeps every customer, including customers who have not placed any orders
+customer_totals <- dbGetQuery(PSTAT132db, "
+                              SELECT c.customer_id, c.name, SUM(o.amount) AS total_spend
+                              FROM customer c 
+                              LEFT JOIN orders o ON c.customer_id = o.customer_id
+                              GROUP BY c.customer_id, c.name
+                              ") %>% as_tibble() #take the results from the previous step, then convert it to a tibble 
+#as_tible() converts an R data frame into a tibble
+customer_totals 
+
+#Disconnect
+DBI::dbDisconnect(PSTAT132db)
+message("PSTAT 132db Disconnected")
+```
+
+Demo 7
+Another Example
+Creates a temporary (in Memory SQLite Database)
+The database exists only while the R session is running 
+
+```{r}
+#":memory:" tells SQLite to create a database in memory rather than in a regular database file # a database exists in memory rather than being saved as a normal database file. When the connection closes, its database contents ar elost. 
+# The data disappears when the in-memory database is destroyed, typically when its last connection closes 
+example7 <- dbConnect(SQLite(), ":memory:")
+
+#Write customer data and pipe as a tibble 
+#Creating the data frame with the customers data
+customers <- data.frame(
+  customer_id = c(1, 2, 3, 4),
+  customer_name = c(
+    "Alice Johnson",
+    "Brian Smith", 
+    "Carla Davis",
+    "Daniel Lee" 
+  ),
+  state = c("CA", "NY", "CA", "TX"),
+  stringsAsFactors = FALSE
+)
+
+
+dbWriteTable(example7, customers,
+             name = "customers", #name of the table to create inside SQLite
+             value = customers, #R data frame whose contents should be written into the table 
+             overwrite = TRUE #replace existing table named 'customers' if one exists 
+             )
+
+california_customers_tibble <- tbl(example7, "customers") %>%
+  filter(state == "CA") %>%
+  select(customer_id, customer_name, state) %>%
+  collect() %>%  #executes this query and brings the resulting data into R's memory 
+  #so now, R has the 2 California customers as an actual R data frame 
+  as_tibble() #converts the result into a tibble 
+
+california_customers_tibble  
+```
