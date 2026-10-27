@@ -1,0 +1,109 @@
+
+```{r setup, include=FALSE}
+library(DBI)
+library(RSQLite)
+library(dplyr)
+library(dbplyr)
+library(tibble)
+library(libridate)
+knitr::opts_chunk$set(echo = TRUE)
+
+PSTAT132db <- dbConnect(
+  RSQLite::SQLite(),
+  "PSTAT132-db.sqlite"
+)
+```
+
+1.
+a) Compute total sales (SUM(amount)) and the number of order per product (product_id and product_name). Save the result to 'sales_by-product' (include product_name). Covert to tibble
+
+```{r}
+sales_by_product <- dbGetQuery(PSTAT132db, "
+                               SELECT 
+                               p.product_id,
+                               p.product_name,
+                               SUM(o.amount) AS total_sales,
+                               COUNT(*) AS n_orders
+                               FROM orders o
+                               JOIN products p 
+                               ON o.product_id = p.product_id
+                               GROUP BY p.product_id, p.product_name
+                               ") %>% as_tibble
+```
+
+
+b) Find products with average order amount (AVG) > 80. Save to 'avg_over_80) (include avg_amount). Convert to tibble
+```{r}
+avg_over_80 <- dbGetQuery(PSTAT132db, "
+                          SELECT p.product_id, p.product_name, AVG(o.amount) AS avg_amount
+                          FROM orders o
+                          JOIN products p
+                          ON o.product_id = p.product_id
+                          GROUP BY p.product_id, p.product_name
+                          HAVING AVG(o.amount) > 80; --using HAVING to calculate average after the orders have been grouped by product. HAVING filters those grouped results, keeping only products whose average order amount is greater than 80
+                          ") %>% as_tibble()
+```
+
+
+c) Create a table 'weekly_orders' that aggregates orders (year-week), returning week label (ie. '2023-01'), n_orders, total_sales. Convert to tibble
+
+```{r}
+weekly_orders <- dbGetQuery(PSTAT132db, "
+                            SELECT
+                            strftime('%Y-%W', order_date) AS week_label, --extracts year and week 
+                            COUNT(*) AS n_orders, --counts the orders in each week 
+                            SUM(amount) AS total_sales --total sales for each week 
+                            FROM orders
+                            GROUP BY strftime('%Y-%W', order_date) --creates one row for each year-week combination 
+                            ORDER BY week_label --sorts the weeks chronologically 
+                            ") %>% as_tibble()
+```
+
+2. Given the following relations: STUDENT(StudentID, Name, Major) ENROLLMENT(StudentID, CourseID, Grade). Write relational algebra expressions for the following using the operators covered in class  (σ, π, ρ, ∪, ∩, −, ×, ⨝) to
+a. Find the names of all students majoring in 'Mathematics'
+b. Find all StudentIDs who are enrolled in course101
+c. Rename the ENROLLMENT relation to E
+d. Find the StudentIDs of students who are enrolled in course 101 OR course 202. 
+e. Find the StudentIDs of students enrolled in course 101 but NOT in course 202.
+
+
+**Relations:**
+
+$$
+\text{STUDENT}(\text{StudentID}, \text{Name}, \text{Major}) \qquad
+\text{ENROLLMENT}(\text{StudentID}, \text{CourseID}, \text{Grade})
+$$
+
+**a.** Names of all students majoring in 'Mathematics':
+
+$$
+\pi_{\text{Name}}\bigl(\sigma_{\text{Major} = \text{'Mathematics'}}(\text{STUDENT})\bigr)
+$$
+
+**b.** StudentIDs of students enrolled in course101:
+
+$$
+\pi_{\text{StudentID}}\bigl(\sigma_{\text{CourseID} = \text{'course101'}}(\text{ENROLLMENT})\bigr)
+$$
+
+**c.** Rename ENROLLMENT to E:
+
+$$
+\rho_{E}(\text{ENROLLMENT})
+$$
+
+**d.** StudentIDs of students enrolled in course 101 OR course 202:
+
+$$
+\pi_{\text{StudentID}}\bigl(\sigma_{\text{CourseID} = \text{'course101'}}(\text{ENROLLMENT})\bigr)
+\;\cup\;
+\pi_{\text{StudentID}}\bigl(\sigma_{\text{CourseID} = \text{'course202'}}(\text{ENROLLMENT})\bigr)
+$$
+
+**e.** StudentIDs of students enrolled in course 101 but NOT in course 202:
+
+$$
+\pi_{\text{StudentID}}\bigl(\sigma_{\text{CourseID} = \text{'course101'}}(\text{ENROLLMENT})\bigr)
+\;-\;
+\pi_{\text{StudentID}}\bigl(\sigma_{\text{CourseID} = \text{'course202'}}(\text{ENROLLMENT})\bigr)
+$$
