@@ -1,0 +1,76 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. Consider the AR(2) model below:
+
+a) Express the model in terms of the back shift operator, B
+
+Xt = 0.8X(t-1) - 0.12X(t-2) + Zt
+X(t-1) = BXt
+X(t-2) = B^2Xt
+so Xt = 0.8Bxt + 0.12B^2Xt = Zt
+
+\[
+(1 - 0.8B + 0.12B^2)X_t = Z_t
+\]
+
+b) Determine whether the model is casual and/or invertible (Hint: use polyroot())
+The AR polynomial in this case is φ(z) = 1 - 0.8z + 0.12z^2. Its roots can be found in R:
+
+```{r}
+polyroot(c(1, -0.8, 0.12))
+```
+
+Here, we see that the roots are around z = 1.667 and 5
+- Since both roots have |z| > 1, they lie outside the unit circle, so the process is casual.
+- Invertibility asks whether it is possible to recover the random shocks Zt from the current and past observations of Xt. Our model in this case is an AR(2) model with no MA component. Since every pure AR model is invertible, this process is also invertible. 
+
+c) We simulate 200 observations from this AR(2) model with the following code
+
+```{r}
+set.seed(1234)
+#generating 200 observations from the model 
+ar2 <- arima.sim(model = list(ar = c(0.8, -0.12)), n = 200, sd = 1)
+
+```
+
+Plot the sample as well as theoretical ACF and PACF
+
+```{r}
+#ACF 
+theo_acf <- ARMAacf(ar = c(0.8, -0.12), lag.max = 20, pacf = FALSE) #calculating theoretical autocorrelations for the model up to lag 20
+op <- par(mfrow = c(1, 2)) #set up the 2 plots side by side 
+plot(0:20, theo_acf, type = "h", ylim = c(-1, 1), #plotting theoretical ACF
+     main = "Theoretical ACF", col = "red",
+     ylab = expression(rho[X](h)), xlab = "h")
+abline(h = 0)
+acf(ar2, lag.max = 20, main = "Sample ACF", ylim = c(-1, 1), #plotting sample ACF from the 200 simulated observations
+    xlab = "h", ylab = expression(hat(rho)[X](h)))
+par(op) #restore original plotting settings
+
+#PACF
+theo_pacf <- ARMAacf(ar = c(0.8, -0.12), lag.max = 20, pacf = TRUE) #calculating theoretical PACF for the model 
+
+op <- par(mfrow = c(1, 2)) #setting up 2 plots side by side
+
+#plotting theoretical PACF 
+plot(1:20, theo_pacf, type = "h", ylim = c(-1, 1),
+     main = "Theoretical PACF", col = "red",
+     ylab = expression(alpha[X](h)), xlab = "h")
+abline(h = 0) #horizontal line at 0 
+
+#calculating and plotting the PACF using the 200 observations simulated in 'ar2' 
+pacf(ar2, lag.max = 20, main = "Sample PACF", ylim = c(-1, 1),
+     xlab = "h", ylab = expression(hat(alpha)[X](h)))
+par(op) #restores plotting settings
+```
+
+
+d) Compare ACF and PACF plots in c
+The theoretical ACF slowly decreases toward 0. It is about 0.71 at lag 1 and 0.45 at lag 2, and continues to decrease without cutting off. The sample ACF shows a similar pattern, but the values differ slightly due to the fact that only 200 observations were simulated. The bars become small at around lag 5, and the small values at later lags are likely due to random variation. 
+The theoretical PACF cuts off after lag 2. It is around 0.71 at lag 1, -0.12 at lag 2, and then 0 afterward. The sample PACF is similar, but random variation makes the values slightly different and it does not hit 0 in the same manner for latter lags (past lag 2). 
+
+Overall, the ACF decreases gradually, while the PACF cuts off after lag 2. This is an exprected pattern for an AR(2) model. Since the second AR coefficient is small, the sample PACF may look similar to an AR(1) model. 
+
