@@ -1,0 +1,95 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+For the process Xt=0.4Xt-2 + Zt - 0.7t-1,
+i) Simulate and plot 100 values of the process
+
+```{r}
+set.seed(123)
+phi <- 0.4 #(AR(1)) coefficient
+theta <- 0.7 #MA(1) coefficient
+n <- 100 #number of observations to simulate
+lag.max <- 20 #number of lags to display in the ACF/PACF plots
+
+#arima.sim() generates an ARMA series, n is the sample size, and rand.gen deafults to N(0, 1) white noise
+x <- arima.sim(model = list(ar = phi, ma = theta), n = n)
+
+#Time series plot of the simulated data
+plot(x, type = "o", pch = 16, cex = 0.6,
+     main = "Simulated ARMA(1, 1): X_t = 0.4 X_{t-1} + Z_t - 0.7 _{t-1}",
+     xlab = "Time (t)", ylab = expression(X[t]))
+abline(h = 0, lty = 2, col = "gray") #reference line at mean (0)
+```
+
+ii) Compute and graph their theoretical ACF and PACF using R
+
+```{r}
+#ARMAacf() computes the exact autocorrelations/partial autocorrelations implied by model parameters (no data involved)
+#With lag.max = 20, ARMAacf returns lags 0..20 for the ACF, and lags 1..20 for the PACF
+acf_theo <- ARMAacf(ar = phi, ma = theta, lag.max = lag.max)
+pacf_theo <- ARMAacf(ar = phi, ma = theta, lag.max = lag.max, pacf = TRUE)
+
+#Plotting theoretical ACF
+plot(0:lag.max, acf_theo, type = "h", lwd = 2,
+     main = "Theoretical ACF of ARMA(1, 1), phi = 0.4, theta = -0.7",
+     xlab = "Lag (h)", ylab = "ACF rho(h)", ylim = c(-1, 1))
+abline(h = 0)
+
+
+#Plotting theoretical PACF
+plot(1:lag.max, pacf_theo, type = "h", lwd = 2,
+     main = "Theoretical PACF of ARMA(1, 1), phi = 0.4, theta = -0.7",
+     xlab = "Lag (h)", ylab = "PACF alpha(h)", ylim = c(-1, 1))
+abline(h = 0)
+```
+
+iii) Compute and graph their sample ACF and PACF using R. How do sample functions compare 
+to their theoretical counterparts
+
+```{r}
+#acf() and pacf() estimate the correlations from the simulated series. The dashed blue lines are approximate 95% bounds (+/i 1.96 sqrt(n))
+#for testing whether a correlation is 0
+
+acf(x, lag.max = lag.max,
+    main = "Sample ACF of simulated ARMA(1, 1) (n = 100)",
+    xlab = "Lag (h)", ylab = "Sample ACF")
+
+pacf(x, lag.max = lag.max,
+     main = "Sample PACF of simulated ARMA(1, 1) (n = 100)",
+     xlab = "Lag (h)", ylab = "Sample PACF")
+
+#Side-by-side comparison of theoretical vs sample ACF 
+acf_samp <- acf(x, lag.max = lag.max, plot = FALSE)$acf
+plot(0:lag.max, acf_theo, type = "h", lwd = 3, col = "black",
+     main = "Theoretical (black) vs Sample (red) ACF",
+     xlab = "Lag (h)", ylab = "ACF", ylim = c(-1, 1))
+points(0:lag.max + 0.2, acf_samp, type = "h", lwd = 3, col = "red")
+abline(h = 0)
+legend("topright", legend = c("Theoretical", "Sample"),
+       col = c("black", "red"), lwd = 3, bty = "n")
+
+pacf_sample <- pacf(x, lag.max = lag.max, plot = FALSE)$acf
+plot(1:lag.max, pacf_theo, type = "h", lwd = 3, col = "black",
+     main = "Theoretical (black) vs Sample (red) PACF",
+     xlab = "Lag (h)", ylab = "PACF", ylim = c(-1, 1))
+points(1:lag.max + 0.2, pacf_sample, type = "h", lwd = 3, col = "red")
+abline(h = 0)
+legend("topright", legend = c("Theoretical", "Sample"),
+       col = c("black", "red"), lwd = 3, bty = "n")
+
+#Same comparison for the PACF
+```
+
+iv) Analyze the smoothness of the simulates processes using their ACFs
+
+```{r}
+#looks at how quickly (and w/which sign) the ACF decays
+#A lag-1 scatterplot makes the same point visually
+plot(x[-n], x[-1],
+     main = "Lag-1 scatterplot: X_t vs X_{t-1}",
+     xlab = expression(X[t-1]), ylab = expression(X[t]), pch = 16)
+abline(lm(x[-1] ~ x[-n]), col = "red") #fitted line shows the (negative) slope
+```
+
+
