@@ -1,0 +1,166 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(DBI)
+library(RSQLite)
+library(dplyr)
+library(dbplyr)
+library(tibble)
+```
+
+Creating an in-memory SQLite database
+```{r}
+PSTAT132db <- dbConnect(RSQLite::SQLite(), "PSTAT132-db.sqlite")
+
+#Creating a sample customer data
+customers <- data.frame(
+  customer_id = c(1, 2, 3, 4, 5),
+  customer_name = c(
+    "Alice Johnson",
+    "Brian Smith",
+    "Carla Vaids",
+    "Daniel Lee",
+    "Emma Wilson"
+  ),
+  state = c("CA", "NY", "CA", "TX", "NY"),
+  stringsAsFactors = FALSE #tells R to keep the columns as text instead of automaticaly converting them into factors (categorical data) 
+)
+
+orders <- data.frame(
+  orders_id = c(1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008),
+  customer_id = c(1, 1, 2, 3, 3, 4, 1, 5),
+  order_date = c("2023-01-03", "2023-01-10", "2023-01-12", "2023-01-15", "2023-01-20", "2023-02-05", "2023-02-18", "2023-01-25"),
+  order_amount = c(250.00, 125.00, 400.00, 90.00, 300.00, 150.00, 500.00, 75.00 ),
+  order_status = c("completed", "completed", "cancelled", "completed", "completed", "completed", "completed", "completed"),
+  stringsAsFactors = FALSE
+)
+
+orders 
+
+#Write the data frames to the database
+dbWriteTable(PSTAT132db,
+             name = "customers", 
+             value = customers,
+             overwrite = TRUE)
+
+dbWriteTable(PSTAT132db,
+             name = "orders",
+             value = "orders",
+             overwrite = TRUE)
+
+dbGetQuery(PSTAT132db, 'SELECT * FROM orders')
+```
+
+Finding customers whose January 2023 spending was above the average
+January 2023 customers spending, Q1
+```{r}
+Q1 <- "SELECT customer_id, total spend --outter query: select total spend and customer ID
+FROM (
+SELECT 
+customer_id, --Inner query: CustomerID total spend table for January 1 - 31
+SUM(order_amount) AS total_spend
+FROM orders
+WHERE order_date >= '2023-01-01'
+AND order_date < '2023-02-01'
+GROUP BY customer_id
+) AS customer_totals --Save inner query as customer_totals
+WHERE total_spend > (  --where total spend > the average spend for that customer
+SELECT AVG(total_spend)
+FROM (
+SELECT customer_is, SUM(order_amount) AS total_spend
+FROM orders
+WHERE oorder_date >= '2023-01-01'
+AND order_date < '2023-02-01'
+GROUP BY customer_id
+) AS avg_totals --save the CTE as avg_totals 
+);"
+
+print(dbGetQuery(PSTAT132db, Q1))
+```
+
+Demo 2 CTE
+```{r}
+Q1_cte <- "
+WITH customer_totals AS ( --calculate each customer's January spending and name the result 'customer_totals' 
+SELECT 
+customer_id,
+SUM(order_amount) AS total_spend
+FROM orders
+WHERE order_date >= '2023-01-01'
+AND order_date < '2023-02-01'
+GROUP BY customer_id 
+)
+--Use the customer_totals result to find customers who spent more than the average 
+SELECT customer_id, total_spend
+FROM customer_totals
+WHERE total_spend > (
+SELECT AVG(total_spend)
+FROM customer_totals
+);
+"
+
+print(dbGetQuery(PSTAT132db, Q1))
+```
+
+Demo 3
+```{r}
+january_completed_orders <- dbGetQuery(PSTAT132db, "
+                                       WITH january_completed_orders AS ( --creates a CTE named 'january_completed_orders' - takes 4 columns from the original orders table, and filters to make sure the orders are completed and the date is January 1, 2023 or later but before February 1 2023
+                                       SELECT order_id, customer_id, order_date, order_amount
+                                       FROM orders
+                                       WHERE order_status = 'completed'
+                                       AND order_date >= '2023-01-01'
+                                       AND order_date < '2023-02-01'
+                                       )
+                                       --Outer query retrievers the CTE created and sorts the results from earliest to latest 
+                                       SELECT order_id, customer_id, order_date, order_amount
+                                       FROM january_completed_orders
+                                       ORDER BY order_date
+                                       ")
+
+january_completed_orders
+
+#This code will fail, important to note why
+dbGetQuery(PSTAT132db, 'SELECT * FROM january_completed_orders')
+```
+The last line fails since 'january_completed_orders' is not a permanent table in the database. It was a CTE< and its lifetime ended when the SQL statement finished. 
+The CTE exists only while its SQL statements runs, and the results retrieved by dbGetQuery() are saved in R and remain avaiable after the R session. 
+You can used the saved R result again, you just cant use them as if they were a SQL table. The confusing part is the same name, 'january_completed_orders' refers to 2 different things
+The line fails since dbGetQUery() sends the text inside the quotes to SQLite, SQLite looks for a table named 'january_completed_orders' inside the database, but the saved R data frame is stored inside R's memory, not as a table in SQLite
+
+
+Demo 4- SQL
+```{r}
+#subquery- query inside another query 
+demo_4 <- dbGetQuery(PSTAT132db, "
+                     SELECT --outer query takes the result of the inner query and selects its customer_id and total_spend columns 
+                     customer_id,
+                     total_spend
+                     FROM (
+                     SELECT --inner query- produces customer ids with total spends for each customer 
+                     customer_id,
+                     SUM(order_amount) AS total_spend
+                     FROM orders
+                     GROUP BY customer_id
+                     ) AS customer_spending; --names the inner query customer_spending 
+                     ")
+
+demo_4
+
+#same query using CTE logic 
+demo_4_cte <- dbGetQuery(PSTAT132db, "
+                         WITH customer_spending AS --Defining a CTE customer_spending 
+                         SELECT
+                         customer_id,
+                         SUM(order_amount) AS total_spend
+                         FROM orders
+                         GROUP BY customer_id
+                         )
+                         SELECT
+                         customer_id,
+                         total_spend
+                         FROM customer_spending; --selects desired columns from customer_spending/CTE
+                         ")
+
+demo_4_cte
+```
