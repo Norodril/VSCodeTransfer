@@ -1,0 +1,213 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(DBI)
+library(RSQLite)
+library(dplyr)
+library(dbplyr)
+library(tibble)
+library(lubridate)
+```
+
+```{r}
+PSTAT132db <- dbConnect(RSQLite::SQLite(), "PSTAT132-db.sqlite") #connects to the database and resets it
+
+dbListTables(PSTAT132db)
+
+#Helper: Convert any columns with 'date' in their name to Date class in R
+#This function takes a data frame and converts every column with "date" in its name
+#Ie. 'order_date', 'shipDate' into R's Date class 
+#if the input isn't a data frame, the function returns it unchanged. Otherwise it returns the data frame with the converted columns 
+convert_date_cols <- function(df) {
+  if (!is.data.frame(df)) return(df)
+  date_cols <- grep("date", names(df), ignore.case = TRUE, value = TRUE)
+  for (col in date_cols) {
+    if (!inherits(df[[col]], "Date")) {
+      if (is.character(df[[col]])) {
+        parsed <- as.Date(df[[col]], optional = TRUE)
+          #fallback to lubridat:: ymd if available and character parson fails
+          if (all(is.na(parsed)) && requireNamespace("lubridate", quietly = TRUE)) {
+            parsed <- lubridate::ymd(df[[col]])
+          }
+          df[[col]] <- parsed
+        } else if (is.numeric(df[[col]])) {
+          df[[col]] <- as.Date(df[[col]], origin = "1970-01-01")
+        } else{
+          df[[col]] <- as.Date(df[[col]])
+        }
+      }
+    }
+  df
+}
+
+```
+
+Example
+```{r}
+customers <- tibble(customer_id = 1:5,  #tibble creates a data frame in R 
+                    name = c('Ava', 'Ben', 'Chi', 'Dee', 'Eli'))
+dbWriteTable(PSTAT132db, "customers", customers, overwrite = TRUE)
+
+products <- tibble(product_id = 1:3, product_name = c("Widget", "Gadget", "Thing"))
+dbWriteTable(PSTAT132db, "products", products, overwrite = TRUE) #dbWriteTable() writes the data into a database table named customers 
+
+# Orders: multiple orders per customer at different dates
+orders <- tibble(
+  order_id = 1:15,
+  customer_id = c(1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 5, 5, 1, 3),
+  product_id = c(1, 2, 1, 3, 1, 2, 1, 1, 2, 3, 1, 2, 1, 3, 2),
+  order_date = as.character(as.Date("2023-01-01") +
+    c(0, 5, 1, 10, 20, 65, 70, 2, 8, 15, 25, 30, 40, 12, 80)),
+    amount = c(50, 30, 80, 40, 40, 60, 25, 90, 50, 50, 20, 70, 35, 60, 25)
+
+)
+
+dbWriteTable(PSTAT132db, "orders", orders, overwrite = TRUE)
+
+#Review
+print(dbGetQuery(PSTAT132db, "SELECT COUNT(*) AS norders FROM orders")) #counts the orders 
+print(dbGetQuery(PSTAT132db, "SELECT * FROM orders ORDER BY order_date LIMIT 8") %>% #display the first 8 orders by date 
+        convert_date_cols())
+
+#Window function example (SQL via dbGetQuery)
+#ROW_NUMBER() - order number per customer (ascneding by date)
+#Assigns a number to each order separately for each customers, with the customer's earliest order numbered 1 
+rownum_sql <- dbGetQuery(PSTAT132db, "
+                         SELECT order_id, --order and customer id and date of order
+                         customer_id, amount, 
+                         DATE(order_date) AS order_date,
+                         --we want to number each customer's orders from oldest to newest, starting at 1 for each customer 
+                  
+                         ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY 
+                         DATE(order_date) ASC) AS rn --creates a new column rn (row number) 
+                         --partition by customer_id separates the orders into groups by customer, then assign a number to each order in its group, within each group, sort the orders by date, from earliest to latest 
+                         FROM orders
+                         ORDER BY customer_id, order_date;
+                         ") %>% convert_date_cols()
+
+print(rownum_sql)
+
+
+```
+
+
+DEMO 2: RANK() and DENSE_RANK() - rank orders by amount per customer
+```{r}
+rank_sql <- dbGetQuery(PSTAT132db, "
+                       SELECT order_id, customer_id, amount, 
+                       RANK() OVER (PARTITION BY customer_id ORDER BY amount DESC) AS rnk, 
+                       --Assigns a rank to each order within its customer's orders
+                       -- Ranks each customer separately, and rank the largest amount first 
+                       DENSE_RANK() OVER (PARTITION BY customer_id ORDER BY amount DESC) AS drnk
+                       --This works almost exactly like RANK(), except it doesn't skip ranks when amounts are tied
+                       FROM orders
+                       ORDER BY customer_id, rnk;
+                       ")
+print(rank_sql)
+```
+
+DEMO 3: LEAD() and LAG()- previous and next order amounts per customer
+
+```{r}
+leadlag_sql <- dbGetQuery(PSTAT132db, "
+                          SELECT order_id, customer_id, DATE(order_date) AS order_date, amount,
+                          --LAG() retrives the amount from the previous row 
+                          --OVER defines to determine which row is previous 
+                          -- considers each customer separately
+                          -- order by date orders each customer's order from earlest to latest
+                          --prev_amount names the neq column 'prev_amount' 
+                          --The first order for each customer has no previous order, so its prev_amount is NULL
+                          LAG(amount) OVER (PARTITION BY customer_id ORDER BY DATE(order_date)) AS prev_amount,
+                          --LEAD retrieves the amount from the next row 
+                          --OVER defines how to determine which row is its next row 
+                          --considers each customer separately and orders each customer's orders by date
+                          LEAD(amount) OVER (PARTITION BY customer_id ORDER BY DATE(order_date)) AS next_amount
+                          FROM orders
+                          ORDER BY customer_id, order_date; --order the rows by customer id and order date smallest to largest
+                          ") %>% convert_date_cols()
+
+print(leadlag_sql)
+```
+
+DEMO 4: Running total (cumulative sum) by customer
+Instead of looking at previous or next order, we want to calculate how much each customer has spent in total up to each order
+```{r}
+running_total_sql <- dbGetQuery(PSTAT132db, "
+                                SELECT order_id, customer_id, DATE(order_date) AS order_date, amount,
+                                --SUM(amount) adds together the values in the 'amount' column
+                                --PARITION by customer_id creates a seaprate group for each customer and order by date
+                                SUM(amount) OVER (PARTITION BY customer_id ORDER BY DATE(order_date)
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total --This tells SQL which rows to include in the sum for the current order
+                                --Start from the first row (unbounded preceding) and stop at the row currently being calculated 
+                                FROM orders
+                                ORDER BY customer_id, order_date; --Order output by customer_id and order_date
+                                ") %>% convert_date_cols()
+
+message("Running total per customer:")
+print(running_total_sql)
+```
+
+
+Demo 5: Moving average (3-row window) per customer
+```{r}
+moving_avg_sql <- dbGetQuery(PSTAT132db, " 
+                             SELECT order_id, customer_id, DATE(order_date) AS order_date, amount,  --calculates the average order amount for each customer using the current order and up to the 2 previous orders, rounded to 2 decimal places 
+                             ROUND(AVG(amount) OVER (PARTITION BY customer_id ORDER BY DATE(order_date)
+                             ROWS BETWEEN 2 PRECEDING AND CURRENT ROW), 2 )AS ma3
+                             FROM orders
+                             ORDER BY customer_id, order_date;
+                             ") %>% convert_date_cols()
+message("3-order moving average per customer: ")
+print(moving_avg_sql)
+```
+
+
+Demo 6: splyr examples (compose with dplyr, translate to SQL)
+```{r}
+orders_tbl <- tbl(PSTAT132db, "orders") #connecting to the orders table 
+
+#A: Use row_number() in dplyr to find the most recent order per customer
+most_recent_dplyr <- orders_tbl %>% 
+  mutate(order_date = sql("DATE(order_date)")) %>% #ensure SQL DATE(...) is used
+  group_by(customer_id) %>%
+  mutate(rn = row_number(desc(order_date))) %>% #row_number() is a window function in dplyr translation
+  filter(rn == 1) %>% 
+  select(customer_id, order_id, order_date, amount) %>% 
+  arrange(customer_id) %>% #sorts the final rows by customer ID so the customers appear in order  
+  collect() #retreives the results from the database into R 
+message("Most recent order per customer (dbplyr):")
+print(convert_date_cols(as_tibble(most_recent_dplyr)))
+
+#Example B: running total via dbplyr (sum over a window)
+running_sql_via_dbplyr <- orders_tbl %>% 
+  mutate(order_date = sql("DATE(order_date)")) %>% 
+  group_by(customer_id) %>% 
+  arrange(order_date) %>% 
+  mutate(running_total = cumsum(amount)) %>% 
+  select(order_id, customer_id, order_date, amount) %>% 
+  head(1) 
+
+show_query(running_sql_via_dbplyr)
+
+```
+
+
+Data Visualization
+Plot running total of a single customer
+```{r}
+#SQL calculates Customer 1's running total over time 
+customer1_rt <- dbGetQuery(PSTAT132db, "
+                           SELECT order_id, DATE(order_date) AS order_date, amount,
+                           SUM(amount) OVER (PARTITION BY customer_id ORDER BY DATE(order_date) ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total
+                           FROM orders
+                           WHERE customer_id = 1
+                           ORDER BY order_date;
+                           ") %>% convert_date_cols()
+
+if(nrow(customer1_rt) > 0){ #only make the graph if customer 1 has at least one order 
+  library(ggplot2)
+  
+  ggplot(customer1_rt, aes(x = order_date, y = running_total)) +
+    geom_line() + geom_point() + labs(title = "Customer 1 running total", x = "Order date", y = "Running total") + theme_minimal() 
+}
+```
